@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/btcsuite/btcd/blockchain"
@@ -96,7 +97,8 @@ type Wallet struct {
 	lockedOutpoints    map[wire.OutPoint]struct{}
 	lockedOutpointsMtx sync.Mutex
 
-	recoveryWindow uint32
+	recoveryWindow  uint32
+	recoveryRunning uint32
 
 	// Channels for rescan processing.  Requests are added and merged with
 	// any waiting requests, before being sent to another goroutine to
@@ -419,10 +421,13 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 	// If the wallet requested an on-chain recovery of its funds, we'll do
 	// so now.
 	if w.recoveryWindow > 0 {
+		atomic.StoreUint32(&w.recoveryRunning, 1)
 		if err := w.recovery(chainClient, birthdayStamp); err != nil {
+			atomic.StoreUint32(&w.recoveryRunning, 0)
 			return fmt.Errorf("unable to perform wallet recovery: "+
 				"%v", err)
 		}
+		atomic.StoreUint32(&w.recoveryRunning, 0)
 	}
 
 	// Compare previously-seen blocks against the current chain. If any of
@@ -1315,6 +1320,10 @@ out:
 			break out
 
 		case <-w.lockRequests:
+			if atomic.LoadUint32(&w.recoveryRunning) == 1 {
+				log.Errorf("Cannot lock wallet while recovery is running.")
+				continue
+			}
 		case <-timeout:
 		}
 
