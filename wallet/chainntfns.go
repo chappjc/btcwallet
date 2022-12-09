@@ -6,7 +6,6 @@ package wallet
 
 import (
 	"bytes"
-	"fmt"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -107,15 +106,32 @@ func (w *Wallet) handleChainNotifications() {
 					chainClient, birthdayStore,
 				)
 				if err != nil && !waddrmgr.IsError(err, waddrmgr.ErrBirthdayBlockNotSet) {
-					panic(fmt.Errorf("unable to sanity "+
-						"check wallet birthday block: %v",
-						err))
+					log.Errorf("unable to sanity check wallet "+
+						"birthday block: %v", err)
 				}
-
-				err = w.syncWithChain(birthdayBlock)
-				if err != nil && !w.ShuttingDown() {
-					panic(fmt.Errorf("unable to synchronize "+
-						"wallet to chain: %v", err))
+				t := time.Duration(0)
+			out:
+				for {
+					select {
+					case <-time.After(t):
+						t = time.Minute
+						// Sync may be interrupted by actions
+						// such as locking the wallet. Try
+						// again after waiting a bit.
+						err = w.syncWithChain(birthdayBlock)
+						if err != nil {
+							if w.ShuttingDown() {
+								return
+							}
+							log.Errorf("unable to synchronize "+
+								"wallet to chain, trying again "+
+								"in one minute: %v", err)
+							break
+						}
+						break out
+					case <-w.quitChan():
+						return
+					}
 				}
 			case chain.BlockConnected:
 				err = walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
