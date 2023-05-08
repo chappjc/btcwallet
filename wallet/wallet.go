@@ -177,14 +177,9 @@ func (w *Wallet) Start() {
 // This method is unstable and will be removed when all syncing logic is moved
 // outside of the wallet package.
 func (w *Wallet) SynchronizeRPC(chainClient chain.Interface) {
-	w.quitMu.Lock()
-	select {
-	case <-w.quit:
-		w.quitMu.Unlock()
+	if w.ShuttingDown() {
 		return
-	default:
 	}
-	w.quitMu.Unlock()
 
 	// TODO: Ignoring the new client when one is already set breaks callers
 	// who are replacing the client, perhaps after a disconnect.
@@ -210,7 +205,15 @@ func (w *Wallet) SynchronizeRPC(chainClient chain.Interface) {
 	// make changes from the RPC client) and not have to stop and
 	// restart them each time the client disconnects and reconnets.
 	w.wg.Add(4)
-	go w.handleChainNotifications()
+	go func() {
+		defer func() {
+			if pv := recover(); pv != nil {
+				log.Criticalf("handleChainNotifications died:\n\n%v\n\n", pv)
+			}
+			w.Stop() // also stops chainClient
+		}()
+		w.handleChainNotifications()
+	}()
 	go w.rescanBatchHandler()
 	go w.rescanProgressHandler()
 	go w.rescanRPCHandler()
